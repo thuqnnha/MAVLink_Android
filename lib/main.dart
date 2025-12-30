@@ -1,3 +1,4 @@
+import 'package:dart_mavlink/mavlink.dart';
 import 'package:flutter/material.dart';
 import 'package:usb_serial/usb_serial.dart';
 import 'mavlink/mavlink_usb_service.dart';
@@ -21,14 +22,12 @@ class _UsbMavlinkPageState extends State<UsbMavlinkPage> {
   final mavlink = MavlinkUsbService();
   List<UsbDevice> devices = [];
   UsbDevice? selected;
-  int baudrate = 115200;
-
+  
+  // State variables
   String status = 'Disconnected';
   int heartbeatCount = 0;
   String armed = '-';
   double? voltage;
-  
-  // Biến hiển thị Attitude
   double roll = 0, pitch = 0, yaw = 0;
 
   @override
@@ -36,51 +35,74 @@ class _UsbMavlinkPageState extends State<UsbMavlinkPage> {
     super.initState();
     loadDevices();
 
-    mavlink.frames.listen((frame) {
-      final msg = frame.message;
-
-      // 1. Xử lý Heartbeat & Gửi Request Data Stream
-      if (msg is Heartbeat) {
-        if (heartbeatCount == 0) {
-          // Lần đầu thấy FC, gửi yêu cầu dữ liệu ngay
-          _requestDataStreams(frame.systemId, frame.componentId);
-        }
-        heartbeatCount++;
-        final isArmed = (msg.baseMode & mavModeFlagSafetyArmed) != 0;
-        setState(() {
-          status = 'Connected';
-          armed = isArmed ? 'ARMED' : 'DISARMED';
-        });
-      }
-
-      // 2. Xử lý dữ liệu Pin
-      if (msg is SysStatus && msg.voltageBattery != 65535) {
-        setState(() => voltage = msg.voltageBattery / 1000.0);
-      }
-
-      // 3. Xử lý dữ liệu Attitude (ĐÂY LÀ PHẦN BẠN CẦN)
-      if (msg is Attitude) {
-        setState(() {
-          roll = msg.roll * 57.2958;  // Rad to Deg
-          pitch = msg.pitch * 57.2958;
-          yaw = msg.yaw * 57.2958;
-        });
+    // Lắng nghe stream
+    mavlink.frames.listen((MavlinkFrame frame) {
+      MavlinkMessage message = frame.message;
+      
+      switch (message.runtimeType) {
+        case Heartbeat:
+          _handleHeartbeat(frame.systemId, frame.componentId, message as Heartbeat);
+          break;
+        case SysStatus:
+          _handleSysStatus(message as SysStatus);
+          break;
+        case Attitude:
+          _handleAttitude(message as Attitude);
+          break;
+        case Statustext:
+          // Bạn có thể in thông báo từ FC ra console ở đây
+          debugPrint("FC Status: ${(message as Statustext).text}");
+          break;
+        default:
+          break;
       }
     });
   }
 
-  // Hàm gửi yêu cầu FC phát dữ liệu
+  // --- Các hàm xử lý tin nhắn riêng biệt (Modular logic) ---
+
+  void _handleHeartbeat(int sysId, int compId, Heartbeat msg) {
+    if (heartbeatCount == 0) {
+      _requestDataStreams(sysId, compId);
+    }
+    heartbeatCount++;
+    final isArmed = (msg.baseMode & mavModeFlagSafetyArmed) != 0;
+    
+    if (mounted) {
+      setState(() {
+        status = 'Connected (Sys:$sysId)';
+        armed = isArmed ? 'ARMED' : 'DISARMED';
+      });
+    }
+  }
+
+  void _handleSysStatus(SysStatus msg) {
+    if (msg.voltageBattery != 65535 && mounted) {
+      setState(() => voltage = msg.voltageBattery / 1000.0);
+    }
+  }
+
+  void _handleAttitude(Attitude msg) {
+    if (mounted) {
+      setState(() {
+        roll = msg.roll * 57.2958; 
+        pitch = msg.pitch * 57.2958;
+        yaw = msg.yaw * 57.2958;
+      });
+    }
+  }
+
+  // --- Các hàm điều khiển ---
+
   void _requestDataStreams(int targetSys, int targetComp) {
-    // Yêu cầu tất cả các luồng dữ liệu phổ biến (bao gồm attitude)
     final request = RequestDataStream(
       targetSystem: targetSys,
       targetComponent: targetComp,
-      reqStreamId: 0, // 0 = MAV_DATA_STREAM_ALL
-      reqMessageRate: 10, // 10 Hz
-      startStop: 1, // 1 = Start
+      reqStreamId: 0, // MAV_DATA_STREAM_ALL
+      reqMessageRate: 10,
+      startStop: 1,
     );
     mavlink.send(request);
-    print("Sent RequestDataStream to $targetSys:$targetComp");
   }
 
   Future<void> loadDevices() async {
@@ -90,8 +112,8 @@ class _UsbMavlinkPageState extends State<UsbMavlinkPage> {
 
   Future<void> connect() async {
     if (selected == null) return;
-    heartbeatCount = 0; // Reset để gửi lại request khi kết nối mới
-    final ok = await mavlink.connect(selected!, baudrate);
+    heartbeatCount = 0;
+    final ok = await mavlink.connect(selected!, 115200);
     setState(() => status = ok ? 'Waiting heartbeat...' : 'Connect failed');
   }
 
@@ -107,19 +129,10 @@ class _UsbMavlinkPageState extends State<UsbMavlinkPage> {
               isExpanded: true,
               hint: const Text('Select USB device'),
               value: selected,
-              items: devices.map((d) => DropdownMenuItem(
-                value: d, 
-                child: Text('${d.productName}'),
-              )).toList(),
+              items: devices.map((d) => DropdownMenuItem(value: d, child: Text('${d.productName}'))).toList(),
               onChanged: (v) => setState(() => selected = v),
             ),
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-              children: [
-                ElevatedButton(onPressed: connect, child: const Text('Connect')),
-                ElevatedButton(onPressed: loadDevices, child: const Text('Refresh')),
-              ],
-            ),
+            ElevatedButton(onPressed: connect, child: const Text('Connect FC')),
             const Divider(),
             _infoTile('Status', status),
             _infoTile('Heartbeats', heartbeatCount.toString()),

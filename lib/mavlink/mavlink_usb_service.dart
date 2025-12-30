@@ -6,43 +6,30 @@ import 'package:dart_mavlink/dialects/common.dart';
 class MavlinkUsbService {
   final _parser = MavlinkParser(MavlinkDialectCommon());
   UsbPort? _port;
-  int _sequence = 0; // Quan trọng: Sequence phải tăng dần sau mỗi tin nhắn gửi đi
+  int _sequence = 0;
 
   Stream<MavlinkFrame> get frames => _parser.stream;
 
-  static Future<List<UsbDevice>> availableDevices() {
-    return UsbSerial.listDevices();
-  }
+  static Future<List<UsbDevice>> availableDevices() => UsbSerial.listDevices();
 
   Future<bool> connect(UsbDevice device, int baudrate) async {
     _port = await device.create();
     if (_port == null) return false;
-
-    final opened = await _port!.open();
-    if (!opened) return false;
+    if (!await _port!.open()) return false;
 
     await _port!.setDTR(true);
     await _port!.setRTS(true);
+    await _port!.setPortParameters(baudrate, UsbPort.DATABITS_8, UsbPort.STOPBITS_1, UsbPort.PARITY_NONE);
 
-    await _port!.setPortParameters(
-      baudrate,
-      UsbPort.DATABITS_8,
-      UsbPort.STOPBITS_1,
-      UsbPort.PARITY_NONE,
-    );
-
-    _port!.inputStream!.listen((Uint8List data) {
-      _parser.parse(data);
-    });
-
+    _port!.inputStream!.listen((data) => _parser.parse(data));
     return true;
   }
 
-  /// Hàm gửi tin nhắn MAVLink từ App xuống FC
+  /// Gửi tin nhắn chuẩn chỉ theo tài liệu: Wrap vào Frame v2 và Serialize
   void send(MavlinkMessage message, {int systemId = 255, int componentId = 0}) {
     if (_port == null) return;
 
-    // Sử dụng lớp MavlinkFrame để tạo gói tin (mặc định là v2 trong các bản mới)
+    // Theo tài liệu: MavlinkFrame.v2(sequence, systemId, componentId, message)
     final frame = MavlinkFrame.v2(
       _sequence,
       systemId,
@@ -50,7 +37,7 @@ class MavlinkUsbService {
       message,
     );
 
-    _sequence = (_sequence + 1) % 256; // Tăng sequence và reset nếu vượt quá 255
+    _sequence = (_sequence + 1) % 256;
     _port!.write(Uint8List.fromList(frame.serialize()));
   }
 
